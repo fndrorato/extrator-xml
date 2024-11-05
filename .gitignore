@@ -1,0 +1,6 @@
+dist/
+build/
+Output/
+script.iss
+chave.key
+credenciais.enc
