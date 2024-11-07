@@ -11,10 +11,10 @@ jobs:
 
     steps:
     - name: Check out repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
         python-version: '3.x'
 
@@ -28,8 +28,8 @@ jobs:
       run: |
         pyinstaller --onefile --icon=icone.ico app.py
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v2
+    - name: Upload executable artifact
+      uses: actions/upload-artifact@v3
       with:
         name: app-executable
         path: dist/app.exe
