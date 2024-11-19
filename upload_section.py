@@ -8,7 +8,7 @@ import shutil
 import numpy as np
 from typing import Dict
 from flet import FilePicker, FilePickerResultEvent, FilePickerUploadEvent, FilePickerUploadFile, Ref, ProgressRing, ElevatedButton, Column, Row, Text, icons, DataTable, Container, DataColumn, DataRow
-from upload_utils import extract_xml_data, is_valid_xml
+from upload_utils import extract_xml_data, is_valid_xml, parse_sped_file
 from utils import get_host, close_dialog
 import pandas as pd
 from session import get_token
@@ -171,9 +171,16 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
 
         for index, f in enumerate(file_picker.result.files):
             file_path = f.path
+            file_type = 'xml'
             
             # Processa o arquivo XML apenas se for bem-formado
-            if file_path.endswith(".xml") and is_valid_xml(file_path):
+            if file_path.endswith(".txt"):
+                file_type = 'txt'
+                # INTERPRETA COMO UM SPED FISCAL
+                data = parse_sped_file(file_path)
+                if data is not None:
+                    all_data.append(data)                
+            elif file_path.endswith(".xml") and is_valid_xml(file_path):
                 data = extract_xml_data(file_path)
                 if data is not None:
                     all_data.append(data)
@@ -188,7 +195,12 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
         
         # Exibe todas as colunas do DataFrame
         global_df = pd.concat(all_data, ignore_index=True)
-        create_base_df()
+        global_df.to_csv("saida.csv", index=False, encoding='utf-8')
+
+        column_list = list(global_df.columns)
+        # print(column_list)
+        
+        create_base_df(file_type)
         progress_bar.value = 0.75
         page.update()
         df_to_display = global_df.head(100)
@@ -210,8 +222,8 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
         row_ref.current.expand = True
         row_ref.current.update()  
         
-        export_csv_button.current.disabled = False
-        upload_server_button.current.disabled = False
+        # export_csv_button.current.disabled = False
+        # upload_server_button.current.disabled = False
 
         progress_bar.value = 1.0
         page.update()        
@@ -220,7 +232,7 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
         page.close(alert_dialog)
         page.update()
 
-def create_base_df():
+def create_base_df(file_type='xml'):
     global base_df
     
     base_df = pd.DataFrame()
@@ -250,7 +262,12 @@ def create_base_df():
     novo_df["uf_dest"] = np.where(global_df["uf_dest"] == 'GO', '', global_df["uf_dest"].str.strip())
     novo_df["cnpj_emitente"] = global_df["CNPJ"]
     novo_df["nome_emitente"] = global_df["xNome"]
-    novo_df["data_emissao"] = pd.to_datetime(global_df["dhEmi"]).dt.strftime('%d/%m/%Y')
+    
+    if file_type == 'xml':
+        novo_df["data_emissao"] = pd.to_datetime(global_df["dhEmi"]).dt.strftime('%d/%m/%Y')
+    else:
+        novo_df["data_emissao"] = global_df["dhEmi"]
+        
     novo_df["quantidade"] = global_df["prod_qCom"].astype(float).map(lambda x: f"{x:.3f}".replace('.', ','))
     
     novo_df["cfop"] = global_df["prod_CFOP"]
@@ -460,7 +477,7 @@ def upload_to_server(page: ft.Page):
         page.update()
 
     # Atualiza o botão e barra de progresso
-    upload_server_button.current.disabled = True
+    # upload_server_button.current.disabled = True
     # Progress bar para exportação
     progress_bar = ft.ProgressBar(width=400, height=40, color="blue", bgcolor="#eeeeee", value=0)
     alert_dialog = ft.AlertDialog(
