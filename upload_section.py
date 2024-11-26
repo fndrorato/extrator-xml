@@ -6,11 +6,13 @@ import time
 import zipfile
 import shutil
 import numpy as np
+import pandas as pd
+import tempfile
 from typing import Dict
 from flet import FilePicker, FilePickerResultEvent, FilePickerUploadEvent, FilePickerUploadFile, Ref, ProgressRing, ElevatedButton, Column, Row, Text, icons, DataTable, Container, DataColumn, DataRow
-from upload_utils import extract_xml_data, is_valid_xml, parse_sped_file
+from upload_utils import extract_xml_data, is_valid_xml, parse_sped_file, rename_columns
 from utils import get_host, close_dialog
-import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 from session import get_token
 from datetime import datetime
 from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
@@ -19,6 +21,7 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncod
 prog_bars: Dict[str, ProgressRing] = {}
 files_selected = Ref[Text]()
 upload_button = Ref[ElevatedButton]()
+clear_button = Ref[ElevatedButton]()
 data_table_ref = Ref[DataTable]() 
 row_ref = Ref[Row]()
 
@@ -30,9 +33,176 @@ global_df = pd.DataFrame()
 base_df = pd.DataFrame()
 consolidado_df = pd.DataFrame()
 
+# Variável global para armazenar os valores selecionados
+cfop_filter = {}  
+
+# Definindo o indicador global
+# loading_indicator = None
+# Inicialização do ProgressRing
+loading_indicator = ft.ProgressRing(width=16, height=16, stroke_width=2)
+current_dialog = None
+
+# Função para criar e mostrar o AlertDialog com o ProgressRing
+def create_loading_indicator(page: ft.Page):
+    global current_dialog
+    # Criar um AlertDialog com o ProgressRing dentro dele
+    
+    # Fechar o diálogo atual, se houver
+    if current_dialog is not None:
+        current_dialog.open = False
+        page.update()
+            
+    alert_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Processando..."),
+        content=loading_indicator  # Conteúdo do AlertDialog é o ProgressRing
+    )
+    
+    # Definir como o diálogo atual
+    current_dialog = alert_dialog    
+    
+    # Adiciona o AlertDialog à página
+    page.dialog = alert_dialog
+    alert_dialog.open = True
+    page.update()
+
+# Função para mostrar o indicador de carregamento (ProgressRing)
+def show_loading_indicator(page: ft.Page):
+    global loading_indicator
+    global current_dialog
+    if current_dialog is not None:
+        current_dialog.open = True
+        loading_indicator.visible = True  # Torna o ProgressRing visível
+        page.update()
+
+# Função para esconder o indicador de carregamento
+def hide_loading_indicator(page: ft.Page):
+    global loading_indicator
+    global current_dialog
+    if current_dialog is not None:
+        loading_indicator.visible = False  # Torna o ProgressRing invisível
+        current_dialog.open = False
+        page.update()
+
+
+def clear_data(page: ft.Page):
+    global global_df, base_df, consolidado_df, cfop_filter
+    
+    # Resetar os DataFrames globais
+    global_df = pd.DataFrame()
+    base_df = pd.DataFrame()
+    consolidado_df = pd.DataFrame()
+
+    # Resetar o filtro CFOP
+    cfop_filter = {}
+
+    # Atualizar a tabela na interface para refletir a remoção dos dados
+    df_vazio = pd.DataFrame(columns=[' '])  # DataFrame vazio
+    if data_table_ref.current is not None:
+        data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_vazio.columns]
+        data_table_ref.current.rows = [
+            DataRow(cells=[ft.DataCell(ft.Text(str(item))) for item in row]) 
+            for row in df_vazio.values
+        ]
+        data_table_ref.current.update()
+
+    # Atualizar outros elementos da interface
+    row_ref.current.expand = False
+    row_ref.current.update()
+    page.update()
+
+
+def update_cfop_filter(e, cfop):
+    global cfop_filter
+    cfop_filter[cfop] = e.control.value  # Atualiza com True/False
+
+def open_cfop_filter_window(page: ft.Page):
+    global current_dialog, cfop_filter
+    
+    # Fechar o diálogo atual, se houver
+    if current_dialog is not None:
+        current_dialog.open = False
+        page.update()    
+
+    # Ordena os CFOPs em ordem alfabética
+    sorted_cfops = sorted(cfop_filter.keys())
+
+    # Conteúdo da janela: lista de checkboxes
+    checkboxes = [
+        ft.Checkbox(
+            label=str(cfop),
+            value=cfop_filter.get(cfop, True),
+            on_change=lambda e, c=cfop: update_cfop_filter(e, c),  # Callback atualizado
+        )
+        for cfop in sorted_cfops
+    ]
+
+    # Função para fechar o diálogo após aplicar o filtro
+    def apply_and_close_dialog(e):
+        page.close(cfop_dialog)
+        page.update()
+
+    # Define a janela de diálogo
+    cfop_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Selecione os CFOPs para filtrar"),
+        content=ft.Column(checkboxes, scroll="adaptive"),
+        actions=[
+            ft.TextButton("Aplicar Filtro", on_click=apply_and_close_dialog),  # Botão com lógica atualizada
+            ft.TextButton("Fechar", on_click=lambda e: page.close(cfop_dialog)),
+        ],
+    )
+    
+    # Definir como o diálogo atual
+    current_dialog = cfop_dialog    
+
+    # Mostra a janela
+    page.dialog = cfop_dialog
+    cfop_dialog.open = True
+    page.update()
+
+
+def close_dialog(page, dialog):
+    dialog.open = False
+    page.update()
+
+def update_cfop_filter(event, cfop):
+    global cfop_filter, global_df
+
+    # Atualiza a variável global cfop_filter com base no estado do checkbox
+    cfop_filter[cfop] = event.control.value
+
+    # Filtra os CFOPs com base nos que estão como True
+    selected_cfops = [cf for cf, selected in cfop_filter.items() if selected]
+
+    # Atualiza o DataFrame filtrado
+    if selected_cfops:
+        filtered_df = global_df[global_df['prod_CFOP'].isin(selected_cfops)]
+    else:
+        filtered_df = pd.DataFrame()  # Caso nenhum CFOP esteja selecionado
+
+    # Atualiza o DataFrame a ser exibido
+    df_to_display = filtered_df.head(100)
+    df_to_display = df_to_display.rename(columns=rename_columns()) 
+
+    # Atualiza o DataTable com o novo DataFrame filtrado
+    if data_table_ref.current is not None:
+        if not df_to_display.empty:
+            data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_to_display.columns]
+            data_table_ref.current.rows = [
+                DataRow(cells=[ft.DataCell(ft.Text(str(item))) for item in row])
+                for row in df_to_display.values
+            ]
+        else:
+            # Caso o DataFrame esteja vazio
+            data_table_ref.current.columns = []
+            data_table_ref.current.rows = []
+        
+        data_table_ref.current.update()
+
 def file_picker_result(e: FilePickerResultEvent, page: ft.Page, file_picker):
     global global_df
-    global_df = pd.DataFrame()  # Limpa o DataFrame antes de começar o novo processamento
+    # global_df = pd.DataFrame()  # Limpa o DataFrame antes de começar o novo processamento
     
     row_ref.current.expand = False
     row_ref.current.update()   
@@ -46,34 +216,54 @@ def file_picker_result(e: FilePickerResultEvent, page: ft.Page, file_picker):
         ]
         data_table_ref.current.update()    
 
-    
     upload_button.current.disabled = True if e.files is None else False
     prog_bars.clear()
-    if e.files is not None:
-        for f in e.files:
-            if f.name.endswith('.zip'):
-                process_zip_file(f.path, file_picker, page)
-            else:
-                files_selected.current.value = f"{len(e.files)} arquivos selecionados"
-    else:
+    
+    if e.files is None:
         files_selected.current.value = ""
+        upload_button.current.disabled = True
+    else:
+        show_loading_indicator(page)
+        create_loading_indicator(page) 
+        # files_selected.current.value = f"{len(e.files)} arquivos selecionados"
+        upload_button.current.disabled = False
+
+        # Processa todos os arquivos ZIP simultaneamente
+        zip_files = [f for f in e.files if f.name.endswith('.zip')]
+        num_zip_files = len(zip_files)
+        other_files = [f for f in e.files if not f.name.endswith('.zip')]
+
+        # Processa os arquivos não ZIP
         
+        for f in other_files:
+            upload_files(e, file_picker, page)
+
+        # Processa arquivos ZIP em paralelo
+        if zip_files:
+            with ThreadPoolExecutor(max_workers=4) as executor:         
+                futures = [executor.submit(process_zip_file, f.path, file_picker, page, num_zip_files) for f in zip_files]
+                for future in futures:
+                    future.result()  # Aguarda o término de cada processo
+                    
+        
+        hide_loading_indicator(page)                                   
+
     page.update()
 
 def on_upload_progress(e: FilePickerUploadEvent, page: ft.Page):
     prog_bars[e.file_name].value = e.progress
     prog_bars[e.file_name].update()
    
-def process_zip_file(zip_path, file_picker, page):
+def process_zip_file(zip_path, file_picker, page, num_zip_files):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         xml_files = [name for name in zip_ref.namelist() if name.endswith('.xml')]
         
         if not xml_files:
             print("Nenhum arquivo XML encontrado no ZIP.")    
             return    
-        
-        temp_dir = 'temp_xml_files'
-        os.makedirs(temp_dir, exist_ok=True)
+
+        # Cria um diretório temporário exclusivo para este ZIP
+        temp_dir = tempfile.mkdtemp(prefix="temp_xml_files_")
 
         xml_file_paths = []
         for xml_file in xml_files:
@@ -82,99 +272,99 @@ def process_zip_file(zip_path, file_picker, page):
             
         # Processa os arquivos XML e depois limpa o diretório temporário
         try:
-            upload_files_from_zip(None, xml_file_paths, page)
+            upload_files_from_zip(None, xml_file_paths, page, num_zip_files)
         finally:
             if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)  # Certifica-se de remover o diretório temporário
+                shutil.rmtree(temp_dir) 
             
-def upload_files_from_zip(e, xml_files, page: ft.Page):
+def upload_files_from_zip(e, xml_files, page: ft.Page, num_zip_files):
     global global_df
-    global_df = pd.DataFrame()
+    global cfop_filter
     all_data = []
     
     if xml_files:
-        progress_bar = ft.ProgressBar(width=400, height=40, color="amber", bgcolor="#eeeeee", value=0)
-        alert_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Processando arquivos..."),
-            content=progress_bar,
-        )
-        
-        page.dialog = alert_dialog
-        alert_dialog.open = True
-        page.update()
 
-        total_files = len(xml_files)
-        files_selected.current.value = f"{total_files} arquivos dentro do ZIP"
+        # total_files = len(xml_files)
+        # files_selected.current.value = f"{total_files} arquivos dentro do ZIP"
 
-        for index, file_path in enumerate(xml_files):
-            # Processa o arquivo XML apenas se for bem-formado
+        def process_single_file(file_path):
+            """Processa um único arquivo XML"""
             if is_valid_xml(file_path):
-                data = extract_xml_data(file_path)                 
+                data = extract_xml_data(file_path)
                 if data is not None:
-                    all_data.append(data) 
+                    return data
             else:
                 print(f"Arquivo inválido ignorado: {file_path}")
+            return None
+
+        try:
+            # Processar arquivos em paralelo
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_file = {executor.submit(process_single_file, file): file for file in xml_files}
+
+                for index, future in enumerate(future_to_file.keys()):
+                    result = future.result()
+                    if result is not None:
+                        all_data.append(result)
+
+            # Verifica se há dados para concatenar
+            if not all_data:
+                raise ValueError("Nenhum dado válido foi processado.")            
             
-            progress_bar.value = (index + 1) / (total_files * 2)
+            # Concatena os dados do ZIP atual ao `global_df`
+            if global_df.empty:
+                global_df = pd.concat(all_data, ignore_index=True)
+            else:
+                global_df = pd.concat([global_df] + all_data, ignore_index=True)
+            
+            unique_values = global_df['prod_CFOP'].unique()
+            cfop_filter = {cfop: True for cfop in unique_values}
+            
+            create_base_df()            
+            df_to_display = global_df.head(100)
+            df_to_display = df_to_display.rename(columns=rename_columns())  
+            
+            # Atualiza o DataTable
+            if data_table_ref.current is not None:
+                data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_to_display.columns]
+                data_table_ref.current.rows = [
+                    DataRow(cells=[ft.DataCell(ft.Text(str(item))) for item in row]) 
+                    for row in df_to_display.values
+                ]
+                data_table_ref.current.update()
+
+            row_ref.current.expand = True
+            row_ref.current.update()
+
+        except Exception as error:
+            # Em caso de erro, exibe mensagem
+            hide_loading_indicator(page)
+
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Erro ao processar arquivos ZIP: {error}", color="white"),
+                bgcolor="red"
+            )
+            page.snack_bar.open = True
             page.update()
-        
-        # Finaliza a barra de progresso
-        global_df = pd.concat(all_data, ignore_index=True)
-        create_base_df()
-        df_to_display = global_df.head(100)
-        progress_bar.value = 0.75
-        page.update()        
-        
-        if data_table_ref.current is not None:
-            data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_to_display.columns]
-            data_table_ref.current.rows = [
-                DataRow(cells=[ft.DataCell(ft.Text(str(item))) for item in row]) 
-                for row in df_to_display.values
-            ]
-            data_table_ref.current.update()
 
-        progress_bar.value = 0.95
-        page.update()        
-
-        row_ref.current.expand = True
-        row_ref.current.update()
-        
-        export_csv_button.current.disabled = False
-        upload_server_button.current.disabled = False
-
-        progress_bar.value = 1.0
-        page.update()        
-
-        page.close(alert_dialog)
-        page.update()
-
+        finally:
+            # Fecha o AlertDialog
+            if num_zip_files == 1:
+                hide_loading_indicator(page)            
+            
 def upload_files(e, file_picker: FilePicker, page: ft.Page):
     global global_df
+    global cfop_filter
     all_data = []
 
     if file_picker.result is not None and file_picker.result.files is not None:
-        # Criar um AlertDialog para mostrar a barra de progresso
-        progress_bar = ft.ProgressBar(width=400, height=40, color="amber", bgcolor="#eeeeee", value=0)
-
-        alert_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Processando arquivos..."),
-            content=progress_bar,
-        )
-        
-        page.dialog = alert_dialog
-        alert_dialog.open = True
-        page.update()
-
-        total_files = len(file_picker.result.files)  # Total de arquivos
 
         for index, f in enumerate(file_picker.result.files):
             file_path = f.path
             file_type = 'xml'
             
             # Processa o arquivo XML apenas se for bem-formado
-            if file_path.endswith(".txt"):
+            if file_path.lower().endswith(".txt"):
                 file_type = 'txt'
                 # INTERPRETA COMO UM SPED FISCAL
                 data = parse_sped_file(file_path)
@@ -185,52 +375,38 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
                 if data is not None:
                     all_data.append(data)
             else:
-                print(f"Arquivo inválido ou não XML ignorado: {file_path}")
-                        
-            # progress_bar.value = (index + 1) / (total_files * 2)
-            # page.update()  # Atualiza a página para refletir a barra de progresso
-        
-        progress_bar.value = 0.5
-        page.update()        
+                print(f"Arquivo inválido ou não XML ignorado: {file_path}") 
         
         # Exibe todas as colunas do DataFrame
-        global_df = pd.concat(all_data, ignore_index=True)
-        global_df.to_csv("saida.csv", index=False, encoding='utf-8')
-
-        column_list = list(global_df.columns)
-        # print(column_list)
+        if global_df.empty:
+            global_df = pd.concat(all_data, ignore_index=True)
+        else:
+            global_df = pd.concat([global_df] + all_data, ignore_index=True)
         
         create_base_df(file_type)
-        progress_bar.value = 0.75
-        page.update()
+
+        # Obter valores únicos da coluna 'prod_CFOP'
+        unique_values = global_df['prod_CFOP'].unique()
+        cfop_filter = {cfop: True for cfop in unique_values}
+
+
+        # Selecionar os primeiros 100 valores do DataFrame filtrado       
         df_to_display = global_df.head(100)
-        progress_bar.value = 0.8
-        page.update()        
+        df_to_display = df_to_display.rename(columns=rename_columns())        
         
-        # Atualiza o DataTable com os nomes das colunas do DataFrame e aplica a cor de fundo                # Atualiza o DataTable com os nomes das colunas do DataFrame
-        if data_table_ref.current is not None:  # Verifica se o DataTable foi inicializado
-            data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_to_display.columns]  # Atualiza as colunas
+        if data_table_ref.current is not None:  
+            data_table_ref.current.columns = [DataColumn(ft.Text(col)) for col in df_to_display.columns]  
             data_table_ref.current.rows = [
                 DataRow(cells=[ft.DataCell(ft.Text(str(item))) for item in row]) 
                 for row in df_to_display.values
             ]
-            data_table_ref.current.update()  # Atualiza a visualização do DataTable
-        
-        progress_bar.value = 0.95
-        page.update()        
+            data_table_ref.current.update()     
         
         row_ref.current.expand = True
         row_ref.current.update()  
         
-        # export_csv_button.current.disabled = False
-        # upload_server_button.current.disabled = False
+        hide_loading_indicator(page) 
 
-        progress_bar.value = 1.0
-        page.update()        
-
-        # Remover o AlertDialog após a conclusão
-        page.close(alert_dialog)
-        page.update()
 
 def create_base_df(file_type='xml'):
     global base_df
@@ -263,6 +439,12 @@ def create_base_df(file_type='xml'):
     novo_df["cnpj_emitente"] = global_df["CNPJ"]
     novo_df["nome_emitente"] = global_df["xNome"]
     
+    # Converta as colunas relevantes para float, substituindo erros por NaN
+    global_df["ICMS_vICMS"] = pd.to_numeric(global_df["ICMS_vICMS"], errors='coerce').fillna(0)
+    global_df["ICMS_pICMS"] = pd.to_numeric(global_df["ICMS_pICMS"], errors='coerce').fillna(0)
+    global_df["ICMS_vFCP"] = pd.to_numeric(global_df["ICMS_vFCP"], errors='coerce').fillna(0)
+    global_df["ICMS_vBC"] = pd.to_numeric(global_df["ICMS_vBC"], errors='coerce').fillna(0)    
+    
     if file_type == 'xml':
         novo_df["data_emissao"] = pd.to_datetime(global_df["dhEmi"]).dt.strftime('%d/%m/%Y')
     else:
@@ -292,10 +474,18 @@ def create_base_df(file_type='xml'):
     global_df["ICMS_vBC"] = pd.to_numeric(global_df["ICMS_vBC"], errors='coerce').fillna(0)
 
     # Calcule 'aliquota_icms'
+    # novo_df["aliquota_icms"] = (
+    #     (global_df["ICMS_vFCP"] / global_df["ICMS_vBC"].replace(0, 1)) * 100 +
+    #     global_df["ICMS_pICMS"]
+    # ).round(2)
+
     novo_df["aliquota_icms"] = (
-        (global_df["ICMS_vFCP"] / global_df["ICMS_vBC"].replace(0, 1)) * 100 +
-        global_df["ICMS_pICMS"]
-    ).round(2)
+        ((global_df["ICMS_vFCP"] / global_df["ICMS_vBC"].replace(0, 1)) * 100 +
+        global_df["ICMS_pICMS"])
+        .round(2)
+        .apply(lambda x: f"{int(x)}" if x.is_integer() else f"{x:.1f}".replace('.', ','))
+    )
+
 
 
     novo_df["valor_icms"] = (global_df["ICMS_vICMS"] + global_df["ICMS_vFCP"]).astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
@@ -307,6 +497,13 @@ def create_base_df(file_type='xml'):
     novo_df["base_icms_st"] = global_df["ICMS_vBCSTRet"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
     novo_df["aliquota_icms_st"] = global_df["ICMS_pST"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
     novo_df["valor_icms_st"] = global_df["ICMS_vICMSSubstituto"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+
+    global_df["PIS_vBC"] = pd.to_numeric(global_df["PIS_vBC"], errors='coerce').fillna(0)
+    global_df["PIS_pPIS"] = pd.to_numeric(global_df["PIS_pPIS"], errors='coerce').fillna(0)
+    global_df["PIS_vPIS"] = pd.to_numeric(global_df["PIS_vPIS"], errors='coerce').fillna(0)
+    global_df["COFINS_vBC"] = pd.to_numeric(global_df["COFINS_vBC"], errors='coerce').fillna(0)
+    global_df["COFINS_pCOFINS"] = pd.to_numeric(global_df["COFINS_pCOFINS"], errors='coerce').fillna(0)
+    global_df["COFINS_vCOFINS"] = pd.to_numeric(global_df["COFINS_vCOFINS"], errors='coerce').fillna(0) 
 
     novo_df["cst_pis"] = global_df["PIS_CST"]
     novo_df["base_pis"] = global_df["PIS_vBC"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
@@ -337,8 +534,19 @@ def create_base_df(file_type='xml'):
     base_df = novo_df
 
 def export_to_csv(page: ft.Page, tipo):
+    global cfop_filter, base_df, consolidado_df
     if base_df.empty:
         return
+    
+    allowed_cfops = [cfop for cfop, selected in cfop_filter.items() if selected]
+    
+    # Cria o DataFrame temporário para exportação
+    if tipo == 'base':
+        export_df = base_df[base_df["cfop"].isin(allowed_cfops)]
+        file_name_csv = 'reg_0000D.csv'
+    else:
+        export_df = consolidado_df[consolidado_df["cfop"].isin(allowed_cfops)]
+        file_name_csv = 'reg_0000.csv'
     
     # Progress bar para exportação
     progress_bar = ft.ProgressBar(width=400, height=40, color="blue", bgcolor="#eeeeee", value=0)
@@ -350,19 +558,22 @@ def export_to_csv(page: ft.Page, tipo):
 
     # Configurar o FilePicker para salvar o CSV
     def save_file_result(e: FilePickerResultEvent):
-        if e.path:
-            progress_bar.value = 0.5  # Atualiza progresso
-            page.update()
-            if tipo == 'base':
-                base_df.to_csv(e.path, index=False, sep=';', encoding='utf-8-sig')
-            else:
-                consolidado_df.to_csv(e.path, index=False, sep=';', encoding='utf-8-sig')
-                
-            progress_bar.value = 1
+        if not e.path:  # Se o usuário cancelar
             page.close(alert_dialog)
-            page.snack_bar = ft.SnackBar(Text("Exportação concluída com sucesso!"))
-            page.snack_bar.open = True
             page.update()
+            return
+        
+        progress_bar.value = 0.5  # Atualiza progresso
+        page.update()
+        
+        # Exporta o DataFrame filtrado para CSV
+        export_df.to_csv(e.path, index=False, sep=';', encoding='utf-8-sig')
+        
+        progress_bar.value = 1
+        page.close(alert_dialog)
+        page.snack_bar = ft.SnackBar(Text("Exportação concluída com sucesso!"))
+        page.snack_bar.open = True
+        page.update()
 
     # Configuração do FilePicker para salvar
     file_picker = FilePicker(on_result=save_file_result)
@@ -373,7 +584,17 @@ def export_to_csv(page: ft.Page, tipo):
     page.update()
 
     # Abrir o FilePicker para que o usuário selecione onde salvar o arquivo
-    file_picker.save_file(file_name="data.csv")  # Aqui você inicia o diálogo para salvar o arquivo com o nome padrão "data.csv".
+    # file_picker.save_file(file_name=file_name_csv)
+    # Propriedades para garantir que o arquivo tenha a extensão correta
+    # Configuração do FilePicker para salvar com a extensão .csv
+    file_picker.save_file(
+        file_name=file_name_csv,  # Nome do arquivo com extensão
+        dialog_title="Escolha o local para salvar o arquivo",
+        file_type=ft.FilePickerFileType.CUSTOM,  # Tipo de arquivo personalizado
+        allowed_extensions=[".csv"]  # Permite apenas arquivos com a extensão .csv
+    )  
+
+
 
 def upload_to_server_working(e, page: ft.Page):
 
@@ -696,13 +917,16 @@ def exportar_consolidado(page: ft.Page):
         consolidado_df = novo_df
         export_to_csv(page, 'consolidado')
 
-
 def upload_section(page: ft.Page):
     # file_picker = FilePicker(on_result=lambda e: file_picker_result(e, page), on_upload=lambda e: on_upload_progress(e, page))
     file_picker = FilePicker(
         on_result=lambda e: file_picker_result(e, page, file_picker),
         on_upload=lambda e: on_upload_progress(e, page)
     )    
+    
+    create_loading_indicator(page)
+    time.sleep(1)
+    hide_loading_indicator(page)
 
     page.overlay.append(file_picker)
     
@@ -711,11 +935,11 @@ def upload_section(page: ft.Page):
         bgcolor="white",
         columns=[DataColumn(ft.Text(" "))],  # Coluna inicial vazia
         rows=[],  # Inicialmente sem linhas
-        heading_row_height=25,  # Altura da linha de cabeçalho
-        data_row_max_height=25,  # Altura das linhas de dados
-        divider_thickness=0.1,  # Espessura do divisor entre linhas
-        heading_row_color="#B0BEC5",  # Cor de fundo do cabeçalho
-        column_spacing=5, 
+        heading_row_height=30,  # Altura da linha de cabeçalho
+        data_row_max_height=35,  # Altura das linhas de dados
+        # divider_thickness=0.1,  # Espessura do divisor entre linhas
+        heading_row_color="#d7e3f7",  # Cor de fundo do cabeçalho
+        column_spacing=10, 
     ) 
     
     data_table_ref.current = data_table  # Armazena a referência do DataTable
@@ -725,9 +949,9 @@ def upload_section(page: ft.Page):
         alignment=ft.alignment.top_left,
         content=data_table,
         expand=True,
-        padding=2,
-        border_radius=0,
-        bgcolor="#B0BEC5",
+        # padding=2,
+        # border_radius=0,
+        # bgcolor="#B0BEC5",
     ) 
 
     return ft.Column(
@@ -740,16 +964,24 @@ def upload_section(page: ft.Page):
                         on_click=lambda _: file_picker.pick_files(allow_multiple=True),
                     ),
                     ElevatedButton(
-                        "Processar",
+                        "Filtrar",
                         ref=upload_button,
-                        icon=icons.START_ROUNDED,
-                        on_click=lambda e: upload_files(e, file_picker, page),
+                        icon=icons.FILTER_ALT_OUTLINED,
+                        on_click=lambda e: open_cfop_filter_window(page),
                         disabled=True,
-                    ),                                                           
+                    ),
+                    ElevatedButton(
+                        "Limpar Dados",
+                        ref=clear_button,
+                        icon=icons.CLEAR_OUTLINED,
+                        on_click=lambda e: clear_data(page),
+                        disabled=False,
+                    ),                    
+                                                        
                 ],
                 alignment=ft.MainAxisAlignment.START,
             ),
-            Text(ref=files_selected),
+            # Text(ref=files_selected),
             ft.Row(
                 [
                     Column(

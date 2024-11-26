@@ -48,4 +48,5 @@ def close_alert(alert_dialog, page):
     
 def close_dialog(page: ft.Page, dialog: ft.AlertDialog):
     dialog.open = False  # Fecha o diálogo
-    page.update()  # Atualiza a página para refletir a mudança    
+    page.update()  # Atualiza a página para refletir a mudança 
+       
