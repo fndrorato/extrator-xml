@@ -45,6 +45,40 @@ def extract_xml_data(file_path):
             uf_dest = ''
     else:
         uf_dest = ''    
+        
+    # Verificar se o nó 'dest' existe
+    dest = root.find('.//{http://www.portalfiscal.inf.br/nfe}dest')
+    dest_data = {}
+
+    if dest is not None:
+        # Verificar se 'CNPJ', 'CPF', 'xNome', 'indIEDest' existem dentro de 'dest'
+        cnpj = dest.find('{http://www.portalfiscal.inf.br/nfe}CNPJ')
+        cpf = dest.find('{http://www.portalfiscal.inf.br/nfe}CPF')
+        xNome = dest.find('{http://www.portalfiscal.inf.br/nfe}xNome')
+        indIEDest = dest.find('{http://www.portalfiscal.inf.br/nfe}indIEDest')
+        
+        # Adicionar os valores ao dicionário 'dest_data'
+        dest_data['dest_CNPJ'] = cnpj.text if cnpj is not None else None
+        dest_data['dest_CPF'] = cpf.text if cpf is not None else None
+        dest_data['dest_xNome'] = xNome.text if xNome is not None else None
+        dest_data['dest_indIEDest'] = indIEDest.text if indIEDest is not None else None
+        
+        # Verificar se 'enderDest' e 'UF' existem dentro de 'dest'
+        ender_dest = dest.find('.//{http://www.portalfiscal.inf.br/nfe}enderDest')
+        if ender_dest is not None:
+            uf_dest = ender_dest.find('{http://www.portalfiscal.inf.br/nfe}UF')
+            dest_data['dest_UF'] = uf_dest.text if uf_dest is not None else None
+        else:
+            dest_data['dest_UF'] = None
+    else:
+        dest_data = {
+            'dest_CNPJ': '',
+            'dest_CPF': '',
+            'dest_xNome': '',
+            'dest_indIEDest': '',
+            'dest_UF': '',
+        }
+        
     
     # Encontrar o elemento infNFe
     inf_prot = root.find('.//{http://www.portalfiscal.inf.br/nfe}infProt')
@@ -73,7 +107,10 @@ def extract_xml_data(file_path):
             prod_data['prod_vFrete'] = 0    
 
         if 'prod_vOutro' not in prod_data:
-            prod_data['prod_vOutro'] = 0    
+            prod_data['prod_vOutro'] = 0  
+            
+        if 'prod_CEST' not in prod_data:
+            prod_data['prod_CEST'] = 0                 
         
         # Adiciona a posição do produto
         prod_data["prod_NumItem"] = index  # Adiciona a coluna com a posição
@@ -150,7 +187,7 @@ def extract_xml_data(file_path):
 
 
         # Combine product and tax data for each 'det' item
-        product_record = {'chNFe': ch_nfe, **ide_data, **emit_data, 'uf_dest': uf_dest, **total_data, **prod_data, **icms_data, **pis_data, **cofins_data}
+        product_record = {'chNFe': ch_nfe, **ide_data, **emit_data, **dest_data, 'uf_dest': uf_dest, **total_data, **prod_data, **icms_data, **pis_data, **cofins_data}
         det_data.append(product_record)
 
     

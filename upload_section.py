@@ -181,6 +181,10 @@ def update_cfop_filter(event, cfop):
     else:
         filtered_df = pd.DataFrame()  # Caso nenhum CFOP esteja selecionado
 
+    total_files = filtered_df['chNFe'].nunique()
+    faturamento_total = filtered_df['prod_vProd'].sum()
+    formatted_total = f"R$ {faturamento_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    files_selected.current.value = f"{total_files} cupons fiscais localizados. Faturamento Total: {formatted_total}"    
     # Atualiza o DataFrame a ser exibido
     df_to_display = filtered_df.head(100)
     df_to_display = df_to_display.rename(columns=rename_columns()) 
@@ -282,10 +286,7 @@ def upload_files_from_zip(e, xml_files, page: ft.Page, num_zip_files):
     global cfop_filter
     all_data = []
     
-    if xml_files:
-
-        # total_files = len(xml_files)
-        # files_selected.current.value = f"{total_files} arquivos dentro do ZIP"
+    if xml_files:       
 
         def process_single_file(file_path):
             """Processa um único arquivo XML"""
@@ -306,7 +307,7 @@ def upload_files_from_zip(e, xml_files, page: ft.Page, num_zip_files):
                     result = future.result()
                     if result is not None:
                         all_data.append(result)
-
+            
             # Verifica se há dados para concatenar
             if not all_data:
                 raise ValueError("Nenhum dado válido foi processado.")            
@@ -319,6 +320,12 @@ def upload_files_from_zip(e, xml_files, page: ft.Page, num_zip_files):
             
             unique_values = global_df['prod_CFOP'].unique()
             cfop_filter = {cfop: True for cfop in unique_values}
+
+            total_cupons_fiscais = global_df['chNFe'].nunique()
+            global_df['prod_vProd'] = pd.to_numeric(global_df['prod_vProd'], errors='coerce')
+            faturamento_total = global_df['prod_vProd'].sum()
+            formatted_total = f"R$ {faturamento_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            files_selected.current.value = f"{total_cupons_fiscais} cupons fiscais localizados. Faturamento Total: {formatted_total} "
             
             create_base_df()            
             df_to_display = global_df.head(100)
@@ -388,7 +395,12 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
         # Obter valores únicos da coluna 'prod_CFOP'
         unique_values = global_df['prod_CFOP'].unique()
         cfop_filter = {cfop: True for cfop in unique_values}
-
+    
+        total_cupons_fiscais = global_df['chNFe'].nunique()
+        global_df['prod_vProd'] = pd.to_numeric(global_df['prod_vProd'], errors='coerce')
+        faturamento_total = global_df['prod_vProd'].sum()
+        formatted_total = f"R$ {faturamento_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        files_selected.current.value = f"{total_cupons_fiscais} cupons fiscais localizados. Faturamento Total: {formatted_total} "            
 
         # Selecionar os primeiros 100 valores do DataFrame filtrado       
         df_to_display = global_df.head(100)
@@ -406,7 +418,6 @@ def upload_files(e, file_picker: FilePicker, page: ft.Page):
         row_ref.current.update()  
         
         hide_loading_indicator(page) 
-
 
 def create_base_df(file_type='xml'):
     global base_df
@@ -514,7 +525,7 @@ def create_base_df(file_type='xml'):
     novo_df["base_cofins"] = global_df["COFINS_vBC"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
     novo_df["aliquota_cofins"] = global_df["COFINS_pCOFINS"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
     novo_df["valor_cofins"] = global_df["COFINS_vCOFINS"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
-    			
+        			
     novo_df["cest"] = global_df["prod_CEST"]			
     novo_df["descricao_produto"] = global_df["prod_xProd"]
     # VER SOBRE ORIGEM PRODUTO
@@ -914,6 +925,27 @@ def exportar_consolidado(page: ft.Page):
             if col in novo_df.columns:
                 novo_df[col] = novo_df[col].astype(float).round(2)                  
 
+        novo_df["valor_icms_desonerado"] = novo_df["valor_icms_desonerado"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_total_item"] = novo_df["valor_total_item"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_outros"] = novo_df["valor_outros"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["base_icms"] = novo_df["base_icms"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["percentual_reducao"] = novo_df["percentual_reducao"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["aliquota_icms"] = novo_df["aliquota_icms"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_icms"] = novo_df["valor_icms"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["quantidade"] = novo_df["quantidade"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_desconto"] = novo_df["valor_desconto"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_frete"] = novo_df["valor_frete"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["iva"] = novo_df["iva"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["base_icms_st"] = novo_df["base_icms_st"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["aliquota_icms_st"] = novo_df["aliquota_icms_st"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["base_pis"] = novo_df["base_pis"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["aliquota_pis"] = novo_df["aliquota_pis"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_pis"] = novo_df["valor_pis"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["aliquota_cofins"] = novo_df["aliquota_cofins"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["base_cofins"] = novo_df["base_cofins"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))
+        novo_df["valor_cofins"] = novo_df["valor_cofins"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))   
+        novo_df["valor_icms_st"] = novo_df["valor_icms_st"].astype(float).map(lambda x: f"{x:.2f}".replace('.', ','))   
+
         consolidado_df = novo_df
         export_to_csv(page, 'consolidado')
 
@@ -981,7 +1013,7 @@ def upload_section(page: ft.Page):
                 ],
                 alignment=ft.MainAxisAlignment.START,
             ),
-            # Text(ref=files_selected),
+            Text(ref=files_selected),
             ft.Row(
                 [
                     Column(
